@@ -7,49 +7,67 @@
 ```t
 tags = {
   Environment = "dev"
-  Owner       = "Yheancarh"
+  Owner-Email = "izik******@***.com"
   Managed-by  = "Terraform"
+}
+```
+- In main.tf, create 2 public subnets
+
+```t
+resource "aws_subnet" "public" {
+
+count                   = var.preferred_number_of_public_subnets == null ? length(data.aws_availability_zones.available.names) : var.preferred_number_of_public_subnets
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = cidrsubnet(var.vpc_cidr, 8, count.index)
+  map_public_ip_on_launch = true
+  availability_zone       = data.aws_availability_zones.available.names[count.index]
+
+  tags = merge(
+    var.tags,
+    {
+      Name = format("%s-PublicSubnet-%s", var.name, count.index)
+    },
+  )
 }
 ```
 
 - Create 4 private subnets
 
 ```t
-resource "aws_subnet" "private_subnet" {
+resource "aws_subnet" "private" {
 
   count                   = var.preferred_number_of_private_subnets == null ? length(data.aws_availability_zones.available.names) : var.preferred_number_of_private_subnets
   vpc_id                  = aws_vpc.main.id
-  cidr_block              = cidrsubnet(var.vpc_cidr, 8, count.index + var.preferred_number_of_public_subnets)
+  cidr_block              = cidrsubnet(var.vpc_cidr, 8, count.index + 2)
   map_public_ip_on_launch = true
-  # element works like modulus (%length_of_array)
-  availability_zone = element(data.aws_availability_zones.available.names, count.index)
+  availability_zone       = data.aws_availability_zones.available.names[count.index]
 
   tags = merge(
     var.tags,
     {
-      Name = format("%s-PrivateSubnet-%s", var.name, count.index + 1)
+      Name = format("%s-PrivateSubnet-%s", var.name, count.index)
     },
   )
 }
 ```
 
-- Create ```internet_gateway.tf``` file
+- Create ```internet_gw.tf``` file
 - Create Internet Gateway
 
 ```t
-resource "aws_internet_gateway" "igw" {
+resource "aws_internet_gateway" "ig" {
   vpc_id = aws_vpc.main.id
 
   tags = merge(
     var.tags,
     {
-      Name = format("%s-IG-%s", var.name, aws_vpc.main.id)
+      Name = format("%s-%s-%s", var.name, aws_vpc.main.id, IG)
     }
   )
 }
 ```
 
-- Create a new file ```natgateway.tf``` file
+- Create a new file ```nat-gw.tf``` file
 - Create one NAT Gateway
 
 ```t
@@ -57,30 +75,30 @@ resource "aws_nat_gateway" "nat" {
   allocation_id = aws_eip.nat_eip.id
   subnet_id     = element(aws_subnet.public_subnet.*.id, 0)
   #   Depends on Internet gateway
-  depends_on = [aws_internet_gateway.igw]
+  depends_on = [aws_internet_gateway.ig]
 
   tags = merge(
     var.tags,
     {
-      Name = format("%s-NAT-%s", var.name, aws_vpc.main.id)
+      Name = format("%s-NAT-%s", var.name, var.environment)
     }
   )
 }
 ```
 
-- Create one EIP address depends on Internet Gateway
+- In the same file add one EIP address depends on Internet Gateway
 
 
 ```t
 resource "aws_eip" "nat_eip" {
   vpc = true
   #   Depends on Internet gateway
-  depends_on = [aws_internet_gateway.igw]
+  depends_on = [aws_internet_gateway.ig]
 
   tags = merge(
     var.tags,
     {
-      Name = format("%s-EIP-%s", var.name, aws_vpc.main.id)
+      Name = format("%s-EIP-%s", var.name, var.environment)
     }
   )
 }
@@ -96,7 +114,7 @@ resource "aws_route_table" "private_rtb" {
   tags = merge(
     var.tags,
     {
-      Name = format("%s-private-rtb", var.name)
+      Name = format("%s-private-rtb", var.name, var.environment)
     }
   )
 }
@@ -263,7 +281,7 @@ resource "aws_security_group" "ext_alb_sg" {
   tags = merge(
     var.tags,
     {
-      Name = "Ext-ALB-sg"
+      Name = "ext-alb-sg"
     }
   )
 }
@@ -279,13 +297,13 @@ resource "aws_security_group_rule" "inbound_ext_alb_ssh" {
 }
 ```
 
-- Create ```bastion-sg``` to SSH access
+- Create ```bastion-sg``` for SSH access
 
 
 ```t
 resource "aws_security_group" "bastion_sg" {
   name        = "bastion_sg"
-  description = "allow SSH access from anywhere"
+  description = "Allow SSH access from anywhere"
   vpc_id      = aws_vpc.main.id
 
   # Inbound Traffic
@@ -528,14 +546,14 @@ resource "aws_security_group_rule" "inbound_datalayer_mysql" {
 - Create certificate using a wildcard
 
 ```t
-resource "aws_acm_certificate" "yheancarh_cert" {
-  domain_name       = "*.yinkadevops.tk"
+resource "aws_acm_certificate" "mtrone" {
+  domain_name       = "*.mtrone.ml"
   validation_method = "DNS"
 }
-
+# Ensure to have added the domain mtrone.ml from freenom to route 53
 # Call the hosted zone
-data "aws_route53_zone" "yheancarh_zone" {
-  name         = "yinkadevops.tk"
+data "aws_route53_zone" "mtrone" {
+  name         = "mtrone.ml"
   private_zone = false
 }
 ```
@@ -544,9 +562,9 @@ data "aws_route53_zone" "yheancarh_zone" {
 
 ```t
 # DNS validation - Writing the DNS validation record to Route53
-resource "aws_route53_record" "yheancarh_record" {
+resource "aws_route53_record" "mtrone" {
   for_each = {
-    for dvo in aws_acm_certificate.yheancarh_cert.domain_validation_options : dvo.domain_name => {
+    for dvo in aws_acm_certificate.mtrone.domain_validation_options : dvo.domain_name => {
       name   = dvo.resource_record_name
       record = dvo.resource_record_value
       type   = dvo.resource_record_type
@@ -563,8 +581,8 @@ resource "aws_route53_record" "yheancarh_record" {
 
 # Validate the certificate using DNS
 resource "aws_acm_certificate_validation" "yheancarh_cert_val" {
-  certificate_arn         = aws_acm_certificate.yheancarh_cert.arn
-  validation_record_fqdns = [for record in aws_route53_record.yheancarh_record : record.fqdn]
+  certificate_arn         = aws_acm_certificate.mtrone.arn
+  validation_record_fqdns = [for record in aws_route53_record.mtrone : record.fqdn]
 }
 ```
 
@@ -572,8 +590,8 @@ resource "aws_acm_certificate_validation" "yheancarh_cert_val" {
 
 ```t
 resource "aws_route53_record" "tooling" {
-  zone_id = data.aws_route53_zone.yheancarh_zone.zone_id
-  name    = "tooling.yinkadevops.tk"
+  zone_id = data.aws_route53_zone.mtrone.zone_id
+  name    = "tooling.mtrone.ml"
   type    = "A"
 
   alias {
@@ -588,8 +606,8 @@ resource "aws_route53_record" "tooling" {
 
 ```t
 resource "aws_route53_record" "wordpress" {
-  zone_id = data.aws_route53_zone.yheancarh_zone.zone_id
-  name    = "wordpress.yinkadevops.tk"
+  zone_id = data.aws_route53_zone.mtrone.zone_id
+  name    = "wordpress.mtrone.ml"
   type    = "A"
 
   alias {
@@ -653,7 +671,7 @@ resource "aws_lb_listener" "nginx_listener" {
   port              = 443
   protocol          = "HTTPS"
   ssl_policy        = "ELBSecurityPolicy-2016-08"
-  certificate_arn   = aws_acm_certificate_validation.yheancarh_cert_val.certificate_arn
+  certificate_arn   = aws_acm_certificate_validation.mtrone.certificate_arn
 
   default_action {
     type             = "forward"
@@ -662,9 +680,16 @@ resource "aws_lb_listener" "nginx_listener" {
 }
 ```
 
-- Create ```output.tf``` file to print the alb name and nginx target group arn
+- Create ```outputs.tf``` file to print the alb name and nginx target group arn
 
 ```t
+output "alb_dns_name" {
+  value = aws_lb.ext-alb.dns_name
+}
+
+output "alb_target_group_arn" {
+  value = aws_lb_target_group.nginx-tgt.arn
+}
 
 ```
 
@@ -674,7 +699,7 @@ resource "aws_lb_listener" "nginx_listener" {
 - Create ```int-alb```
 
 ```t
-resource "aws_lb" "int_alb" {
+resource "aws_lb" "ialb" {
   name               = "int-alb"
   internal           = true
   load_balancer_type = "application"
@@ -735,12 +760,12 @@ resource "aws_lb_target_group" "tooling_tgt" {
 
 ```t
 # Wordpress Listener
-resource "aws_lb_listener" "wordpress_listener" {
+resource "aws_lb_listener" "web_listener" {
   load_balancer_arn = aws_lb.int_alb.arn
   port              = 443
   protocol          = "HTTPS"
   ssl_policy        = "ELBSecurityPolicy-2016-08"
-  certificate_arn   = aws_acm_certificate_validation.yheancarh_cert_val.certificate_arn
+  certificate_arn   = aws_acm_certificate_validation.mtrone.certificate_arn
 
   default_action {
     type             = "forward"
@@ -750,7 +775,7 @@ resource "aws_lb_listener" "wordpress_listener" {
 
 # Tooling Listener rule
 resource "aws_lb_listener_rule" "tooling_listener" {
-  listener_arn = aws_lb_listener.wordpress_listener.arn
+  listener_arn = aws_lb_listener.web_listener.arn
   priority     = 99
 
   action {
@@ -760,7 +785,7 @@ resource "aws_lb_listener_rule" "tooling_listener" {
 
   condition {
     host_header {
-      values = ["tooling.yinkadevops.tk"]
+      values = ["tooling.mtrone.ml"]
     }
   }
 }
@@ -773,7 +798,7 @@ resource "aws_lb_listener_rule" "tooling_listener" {
 - Create SNS topic for the autoscaling groups
 
 ```t
-resource "aws_sns_topic" "yheancarh_sns" {
+resource "aws_sns_topic" "mtrone_sns" {
   name = "Default_CloudWatch_Alarms_Topic"
 }
 ```
@@ -781,7 +806,7 @@ resource "aws_sns_topic" "yheancarh_sns" {
 - Create notification for all the autoscaling groups
 
 ```t
-resource "aws_autoscaling_notification" "yheancarh_notifications" {
+resource "aws_autoscaling_notification" "mtrone_notifications" {
   group_names = [
     aws_autoscaling_group.bastion_asg.name,
     aws_autoscaling_group.nginx_asg.name,
@@ -796,7 +821,7 @@ resource "aws_autoscaling_notification" "yheancarh_notifications" {
     "autoscaling:EC2_INSTANCE_TERMINATE_ERROR",
   ]
 
-  topic_arn = aws_sns_topic.yheancarh_sns.arn
+  topic_arn = aws_sns_topic.mtrone_sns.arn
 }
 ```
 
@@ -844,10 +869,10 @@ resource "aws_launch_template" "bastion_launch_template" {
 resource "aws_autoscaling_group" "bastion_asg" {
   name                      = "bastion_asg"
   max_size                  = 2
-  min_size                  = 1
+  min_size                  = 2
   health_check_grace_period = 300
   health_check_type         = "ELB"
-  desired_capacity          = 1
+  desired_capacity          = 2
 
   vpc_zone_identifier = [for subnet in aws_subnet.public_subnet : subnet.id]
 
@@ -858,7 +883,7 @@ resource "aws_autoscaling_group" "bastion_asg" {
 
   tag {
     key                 = "Name"
-    value               = "Bastion_launch_template"
+    value               = "mtrone-bastion"
     propagate_at_launch = true
   }
 }
@@ -919,7 +944,7 @@ resource "aws_autoscaling_group" "nginx_asg" {
 
   tag {
     key                 = "Name"
-    value               = "Nginx_launch_template"
+    value               = "mtrone-nginx"
     propagate_at_launch = true
   }
 }
@@ -931,7 +956,7 @@ resource "aws_autoscaling_attachment" "asg_attachment_nginx" {
 }
 ```
 
-- Create ```asg-wordpress-tooling.tf``` file
+- Create ```asg-websever.tf``` file
 - Create launch template, autoscaling for wordpress and attach them to the internal load balancer
 
 ```t
@@ -970,8 +995,8 @@ resource "aws_launch_template" "wordpress_launch_template" {
 }
 
 # Auto Scaling for Wordpress
-resource "aws_autoscaling_group" "wordpress_asg" {
-  name                      = "wordpress_asg"
+resource "aws_autoscaling_group" "wordpress-asg" {
+  name                      = "wordpress-asg"
   max_size                  = 2
   min_size                  = 1
   health_check_grace_period = 300
@@ -987,7 +1012,7 @@ resource "aws_autoscaling_group" "wordpress_asg" {
 
   tag {
     key                 = "Name"
-    value               = "Wordpress_launch_template"
+    value               = "mtrone-wordpress"
     propagate_at_launch = true
   }
 }
@@ -1054,7 +1079,7 @@ resource "aws_autoscaling_group" "tooling_asg" {
 
   tag {
     key                 = "Name"
-    value               = "Tooling_launch_template"
+    value               = "mtrone-tooling"
     propagate_at_launch = true
   }
 }
@@ -1073,7 +1098,7 @@ resource "aws_autoscaling_attachment" "asg_attachment_tooling" {
 - Create a key from AWS Key Management System
 
 ```t
-resource "aws_kms_key" "yheancarh_kms" {
+resource "aws_kms_key" "mtrone_kms" {
   description = "KMS key "
   policy      = <<EOF
 	{
@@ -1083,11 +1108,7 @@ resource "aws_kms_key" "yheancarh_kms" {
 			{
 				"Sid": "Enable IAM User Permissions",
 				"Effect": "Allow",
-				"Principal": { "AWS": [
-            "arn:aws:iam::${var.account_no}:user/Ishola",
-            "arn:aws:iam::${var.account_no}:user/terraform"
-            ]
-          },
+				"Principal": { "AWS": "arn:aws:iam::${var.account_no}:user/izik" },
 				"Action": "kms:*",
 				"Resource": "*"
 			}
@@ -1102,21 +1123,21 @@ resource "aws_kms_key" "yheancarh_kms" {
 ```t
 resource "aws_kms_alias" "alias" {
   name          = "alias/kms"
-  target_key_id = aws_kms_key.yheancarh_kms.key_id
+  target_key_id = aws_kms_key.mtrone-kms.key_id
 }
 ```
 
 - Create Elastic File System
 
 ```t
-resource "aws_efs_file_system" "yheancarh_efs" {
+resource "aws_efs_file_system" "mtrone_efs" {
   encrypted  = true
-  kms_key_id = aws_kms_key.yheancarh_kms.arn
+  kms_key_id = aws_kms_key.mtrone-kms.arn
 
   tags = merge(
     var.tags,
     {
-      Name = "Yheancarh-efs"
+      Name = "mtrone-efs"
     }
   )
 }
@@ -1127,14 +1148,14 @@ resource "aws_efs_file_system" "yheancarh_efs" {
 ```t
 resource "aws_efs_mount_target" "subnet_1" {
   file_system_id  = aws_efs_file_system.yheancarh_efs.id
-  subnet_id       = aws_subnet.private_subnet[2].id
-  security_groups = [aws_security_group.datalayer_sg.id]
+  subnet_id       = aws_subnet.private[0].id
+  security_groups = [aws_security_group.datalayer-sg.id]
 }
 
 resource "aws_efs_mount_target" "subnet_2" {
   file_system_id  = aws_efs_file_system.yheancarh_efs.id
-  subnet_id       = aws_subnet.private_subnet[3].id
-  security_groups = [aws_security_group.datalayer_sg.id]
+  subnet_id       = aws_subnet.private[1].id
+  security_groups = [aws_security_group.datalayer-sg.id]
 }
 ```
 
@@ -1142,8 +1163,8 @@ resource "aws_efs_mount_target" "subnet_2" {
 
 ```t
 # Create access point for wordpress
-resource "aws_efs_access_point" "wordpress_ap" {
-  file_system_id = aws_efs_file_system.yheancarh_efs.id
+resource "aws_efs_access_point" "wordpress" {
+  file_system_id = aws_efs_file_system.mtrone-efs.id
 
   posix_user {
     gid = 0
@@ -1163,7 +1184,7 @@ resource "aws_efs_access_point" "wordpress_ap" {
 
 # Create access point for tooling
 resource "aws_efs_access_point" "tooling_ap" {
-  file_system_id = aws_efs_file_system.yheancarh_efs.id
+  file_system_id = aws_efs_file_system.mtrone-efs.id
 
   posix_user {
     gid = 0
@@ -1189,14 +1210,14 @@ resource "aws_efs_access_point" "tooling_ap" {
  - Create subnet group for the RDS instance
 
 ```t
-resource "aws_db_subnet_group" "yheancarh_rds_subnet" {
-  name       = "yheancarh_rds_subnet"
+resource "aws_db_subnet_group" "mtrone_rds" {
+  name       = "mtrone-rds"
   subnet_ids = [aws_subnet.private_subnet[2].id, aws_subnet.private_subnet[3].id]
 
   tags = merge(
     var.tags,
     {
-      Name = "Yheancarh-rds"
+      Name = "mtrone-rds"
     }
   )
 }
@@ -1205,62 +1226,65 @@ resource "aws_db_subnet_group" "yheancarh_rds_subnet" {
  - Create RDS instance with the subnets group
 
 ```t
-resource "aws_db_instance" "yheancarh_rds_instance" {
-  allocated_storage      = 10
+resource "aws_db_instance" "mtrone-rds" {
+  allocated_storage      = 20
   engine                 = "mysql"
   storage_type           = "gp2"
   engine_version         = "5.7"
   instance_class         = "db.t2.micro"
-  db_name                = "yheancarh_db"
+  db_name                = "isaacdb"
   username               = var.master-username
   password               = var.master-password
   parameter_group_name   = "default.mysql5.7"
-  db_subnet_group_name   = aws_db_subnet_group.yheancarh_rds_subnet.name
+  db_subnet_group_name   = aws_db_subnet_group.mtrone-rds.name
   skip_final_snapshot    = true
-  vpc_security_group_ids = [aws_security_group.datalayer_sg.id]
-  multi_az               = true
+  vpc_security_group_ids = [aws_security_group.datalayer-sg.id]
+  multi_az               = "true"
 }
 ```
 
 - Run ```terraform apply```
 
-![plan](PBL-17/tplan1.png)
+![plan](./images/tplan1.png)
 
-![apply](PBL-17/tapply.png)
+![apply](./images/tapply.png)
 
-![vpc](PBL-17/VPC.png)
+![vpc](./images/VPC.png)
 
-![subnet](PBL-17/subnets.png)
+![subnet](./images/subnets.png)
 
-![igw](PBL-17/igw.png)
+![igw](./images/igw.png)
 
-![eip](PBL-17/EIP.png)
+![eip](./images/EIP.png)
 
-![nat](PBL-17/NAT.png)
+![nat](./images/NAT.png)
 
-![rtb](PBL-17/rtb.png)
+![rtb](./images/rtb.png)
 
-![role](PBL-17/roles.png)
+![role](./images/roles.png)
 
-![policy](PBL-17/policy.png)
+![policy](./images/policy.png)
 
-![security](PBL-17/secgroup.png)
+![security](./images/secgroup.png)
 
-![cert](PBL-17/cert.png)
+![cert](./images/cert.png)
 
-![alb](PBL-17/alb.png)
+![cert](./images/route53.png)
 
-![tgt](PBL-17/tgt.png)
+![alb](./images/alb.png)
 
-![lt](PBL-17/lt.png)
+![tgt](./images/tgt.png)
 
-![asg](PBL-17/asg.png)
+![lt](./images/lt.png)
 
-![kms](PBL-17/kms.png)
+![asg](./images/asg.png)
 
-![efs](PBL-17/efs.png)
+![kms](./images/kms.png)
 
-![sns](PBL-17/sns.png)
+![efs](./images/efs.png)
+![efs](./images/efs2.png)
 
-![rds](PBL-17/rds.png)
+![sns](./images/sns.png)
+
+![rds](./images/rds.png)
 
